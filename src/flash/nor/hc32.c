@@ -4,6 +4,13 @@
 
 #define HC32_SECTOR_SIZE 0x1ff
 
+#define HC32_FLASH_BYPASS 0x4002002c
+#define HC32_FLASH_CR 0x40020020
+#define HC32_FLASH_SLOCK0 0x40020030
+#define HC32_FLASH_SLOCK1 0x40020034
+#define HC32_FLASH_SLOCK2 0x40020040
+#define HC32_FLASH_SLOCK3 0x40020044
+
 struct hc32_flash_bank {
     bool probed;
     uint32_t user_bank_size;  
@@ -38,12 +45,97 @@ static int hc32_erase(struct flash_bank *bank, uint32_t address, uint32_t size) 
 static int hc32_protect(struct flash_bank *bank, int set, 
         unsigned int first, unsigned int last) {
 
+    LOG_ERROR("Not implemented");
+
+    return ERROR_OK;
+}
+
+static int hc32_flash_bypass(struct target *target) {
+    int retval = target_write_u16(target, HC32_FLASH_BYPASS, 0x5A5A);
+    if (retval != ERROR_OK)
+        return retval;
+
+    retval = target_write_u16(target, HC32_FLASH_BYPASS, 0xA5A5);
+    if (retval != ERROR_OK)
+        return retval;
+    
+    return ERROR_OK;
+}
+
+static int hc32_flash_unlock(struct flash_bank *bank) {
+    struct target *target = bank->target;
+    struct hc32_flash_bank *hc32_info = bank->driver_priv;
+    int retval;
+
+    retval = hc32_flash_bypass(target);
+    if (retval != ERROR_OK)
+        return retval;
+
+    retval = target_write_u32(target, HC32_FLASH_SLOCK0, 0xfffffff);
+    if (retval != ERROR_OK)
+        return retval;
+    
+    if (hc32_info->num_sectors > 128) {
+        retval = hc32_flash_bypass(target);
+        if (retval != ERROR_OK)
+            return retval;
+            
+        retval = target_write_u32(target, HC32_FLASH_SLOCK1, 0xfffffff);
+        if (retval != ERROR_OK)
+            return retval;
+    }
+
+    if (hc32_info->num_sectors > 256) {
+        retval = hc32_flash_bypass(target);
+        if (retval != ERROR_OK)
+            return retval;
+            
+        retval = target_write_u32(target, HC32_FLASH_SLOCK2, 0xfffffff);
+        if (retval != ERROR_OK)
+            return retval;
+    }
+
+    if (hc32_info->num_sectors == 384) {
+        retval = hc32_flash_bypass(target);
+        if (retval != ERROR_OK)
+            return retval;
+            
+        retval = target_write_u32(target, HC32_FLASH_SLOCK3, 0xfffffff);
+        if (retval != ERROR_OK)
+            return retval;
+    }
+
     return ERROR_OK;
 }
 
 static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
 		uint32_t offset, uint32_t count) {
+
+    struct target *target = bank->target;
+
+    if (target->state != TARGET_HALTED) {
+        LOG_ERROR("Target not halted");
+        return ERROR_TARGET_NOT_HALTED;
+    }
+
+    hc32_flash_unlock(bank);
     
+    // retval = hc32_flash_bypass(target);
+    // if (retval != ERROR_OK)
+    //     return retval;
+
+    // uint32_t old_cr = 0;
+    // retval = target_read_u32(target, HC32_FLASH_CR, &old_cr);
+    // if (retval != ERROR_OK)
+    //     return retval;
+
+    // retval = target_write_u32(target, HC32_FLASH_CR, old_cr | 0x1);
+    // if (retval != ERROR_OK)
+    //     return retval;
+
+
+    // Handle byte, halfword, and word
+
 
     return ERROR_OK;
 }
