@@ -2,6 +2,9 @@
 #include <helper/binarybuffer.h>
 #include <target/algorithm.h>
 
+#define FLASH_ERASE_TIMEOUT 10000
+#define FLASH_WRITE_TIMEOUT 5
+
 #define HC32_SECTOR_SIZE 0x1ff
 
 #define HC32_FLASH_BYPASS 0x4002002c
@@ -11,68 +14,20 @@
 #define HC32_FLASH_SLOCK2 0x40020040
 #define HC32_FLASH_SLOCK3 0x40020044
 
+#define FLASH_OP_READ 0b00
+#define FLASH_OP_WRITE 0b01
+#define FLASH_OP_SECTOR_ERASE 0b10
+#define FLASH_OP_CHIP_ERASE 0b11
+
 struct hc32_flash_bank {
     bool probed;
     uint32_t user_bank_size;  
     uint16_t num_sectors;
+    uint8_t flash_state;
 };
 
 static int hc32_get_flash_size(struct flash_bank *bank, uint32_t *flash_size) {
     return target_read_u32(bank->target, 0x00100c70, flash_size);
-}
-
-FLASH_BANK_COMMAND_HANDLER(hc32_flash_bank_command) {
-    struct hc32_flash_bank *hc32_info;
-
-    if (CMD_ARGC < 6)
-        return ERROR_COMMAND_SYNTAX_ERROR;
-
-    hc32_info = malloc(sizeof(struct hc32_flash_bank));
-    bank->driver_priv = hc32_info;
-
-    hc32_info->probed = false;
-
-    return ERROR_OK;
-}
-
-static int hc32_erase(struct flash_bank *bank, uint32_t address, uint32_t size) {
-
-
-    return ERROR_OK;
-}
-
-static int hc32_protect(struct flash_bank *bank, int set, 
-        unsigned int first, unsigned int last) {
-
-    LOG_ERROR("Not implemented");
-
-    return ERROR_OK;
-}
-
-static int hc32_get_flash_status(struct flash_bank *bank, uint32_t *status) {
-    struct target *target = bank->target;
-    return target_read_u32(target, HC32_FLASH_CR, status);
-}
-
-static int hc32_wait_status_busy(struct flash_bank *bank, int timeout) {
-    uint32_t status;
-    int retval = ERROR_OK;
-
-    for (;;) {
-        retval = hc32_get_flash_status(bank, &status);
-        if (retval != ERROR_OK)
-            return retval;
-        LOG_DEBUG("status: 0x%x", status);
-        if ((status & 0b10000) == 0)
-            break;
-        if (timeout-- <= 0) {
-            LOG_ERROR("timed out waiting for flash");
-            return ERROR_FAIL;
-        }
-        alive_sleep(1);
-    }
-
-    return retval;
 }
 
 static int hc32_flash_bypass(struct target *target) {
@@ -133,6 +88,131 @@ static int hc32_flash_unlock(struct flash_bank *bank) {
     return ERROR_OK;
 }
 
+
+static int hc32_get_flash_status(struct flash_bank *bank, uint32_t *status) {
+    struct target *target = bank->target;
+    return target_read_u32(target, HC32_FLASH_CR, status);
+}
+
+static int hc32_wait_status_busy(struct flash_bank *bank, int timeout) {
+
+    uint32_t status;
+    int retval = ERROR_OK;
+
+    for (;;) {
+        retval = hc32_get_flash_status(bank, &status);
+        if (retval != ERROR_OK)
+            return retval;
+        LOG_DEBUG("status: 0x%x", status);
+        if ((status & 0b10000) == 0)
+            break;
+        if (timeout-- <= 0) {
+            LOG_ERROR("timed out waiting for flash");
+            return ERROR_FAIL;
+        }
+        alive_sleep(1);
+    }
+
+    return retval;
+}
+
+
+
+FLASH_BANK_COMMAND_HANDLER(hc32_flash_bank_command) {
+    struct hc32_flash_bank *hc32_info;
+
+    if (CMD_ARGC < 6)
+        return ERROR_COMMAND_SYNTAX_ERROR;
+
+    hc32_info = malloc(sizeof(struct hc32_flash_bank));
+    bank->driver_priv = hc32_info;
+
+    hc32_info->probed = false;
+
+    return ERROR_OK;
+}
+
+static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
+    struct hc32_flash_bank *hc32_info = bank->driver_priv;
+    struct target *target = bank->target;
+    int retval = ERROR_OK;
+
+    retval = hc32_flash_bypass(target);
+    if (retval != ERROR_OK)
+        return retval;
+
+    uint32_t FLASH_CR;
+    retval = target_read_u32(target, HC32_FLASH_CR, &FLASH_CR);
+    if (retval != ERROR_OK)
+        return retval;
+
+    retval = target_write_u32(target, HC32_FLASH_CR, (FLASH_CR & ~0b11) | flash_state);
+    if (retval != ERROR_OK)
+        return retval;
+
+    retval = target_read_u32(target, HC32_FLASH_CR, &FLASH_CR);
+    if (retval != ERROR_OK)
+        return retval; 
+
+    if (!(FLASH_CR & flash_state)) {
+        LOG_ERROR("Failed to set flash state to %u", flash_state);
+        return ERROR_FAIL;
+    }
+
+    hc32_info->flash_state = flash_state;
+
+    return retval;
+}
+
+
+
+static int hc32_erase(struct flash_bank *bank, unsigned int first,
+		unsigned int last) {
+    struct target *target = bank->target;
+
+    assert((first <= last) && (last < bank->num_sectors));
+
+    if (bank->target->state != TARGET_HALTED) {
+        LOG_ERROR("Target not halted");
+        return ERROR_TARGET_NOT_HALTED;
+    }
+
+    int retval;
+
+    // STEP 2
+    retval = hc32_set_flash_state(bank, FLASH_OP_SECTOR_ERASE);
+    if (retval != ERROR_OK)
+        return retval;
+
+    // Step 5
+    retval = hc32_flash_unlock(bank);
+    if (retval != ERROR_OK)
+        return retval;
+
+    for (unsigned int i = first; i <= last; i++) {
+        uint32_t sector_middle = (0x1ff / 2) + (i * 0x1ff);
+        retval = target_write_u32(target, sector_middle, 0xDEADBEEF);
+        if (retval != ERROR_OK)
+            return retval;
+
+        retval = hc32_wait_status_busy(bank, FLASH_ERASE_TIMEOUT);
+    }
+
+    retval = hc32_set_flash_state(bank, FLASH_OP_READ);
+    if (retval != ERROR_OK)
+        return retval;
+
+    return ERROR_OK;
+}
+
+static int hc32_protect(struct flash_bank *bank, int set, 
+        unsigned int first, unsigned int last) {
+
+    LOG_ERROR("Not implemented");
+
+    return ERROR_OK;
+}
+
 static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
 		uint32_t offset, uint32_t count) {
 
@@ -165,8 +245,8 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
     return ERROR_OK;
 }
 
-// static int hc32_read(struct flash_bank *bank, uint32_t address, uint8_t *data, uint32_t size) {
-
+// static int hc32_read(struct flash_bank *bank, uint8_t* buffer, uint32_t offset, uint32_t size) {
+//     default_flash_read(bank, buffer, offset, size);
 //     return ERROR_OK;
 // }
 
@@ -285,9 +365,29 @@ static int get_hc32_info(struct flash_bank *bank, struct command_invocation *cmd
     return ERROR_OK;
 }
 
+COMMAND_HANDLER(hc32_handle_mass_erase_command) {
+    return ERROR_OK;
+}
 
+static const struct command_registration hc32_exec_command_handlers[] = {
+    {
+        .name = "mass_erase",
+        .handler = hc32_handle_mass_erase_command,
+        .mode = COMMAND_ANY,
+        .help = "mass erase command group",
+        .usage = "",
+    },
+    COMMAND_REGISTRATION_DONE
+};
 
 static const struct command_registration hc32_command_handlers[] = {
+    {
+		.name = "hc32",
+		.mode = COMMAND_ANY,
+		.help = "hc32 flash command group",
+		.usage = "",
+		.chain = hc32_exec_command_handlers,
+	},
     COMMAND_REGISTRATION_DONE
 };
 
