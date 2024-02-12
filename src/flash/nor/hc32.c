@@ -5,7 +5,7 @@
 #define FLASH_ERASE_TIMEOUT 10000
 #define FLASH_WRITE_TIMEOUT 5
 
-#define HC32_SECTOR_SIZE 0x1ff
+#define HC32_SECTOR_SIZE 0x200
 
 #define HC32_FLASH_BYPASS 0x4002002c
 #define HC32_FLASH_CR 0x40020020
@@ -224,6 +224,14 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
     }
 
     hc32_flash_unlock(bank);
+
+    // Lets try writing a byte at a time
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t addr = bank->base + offset + i;
+        int retval = target_write_u8(target, addr, buffer[i]);
+        if (retval != ERROR_OK)
+            return retval;
+    }
     
     // retval = hc32_flash_bypass(target);
     // if (retval != ERROR_OK)
@@ -252,13 +260,13 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
 
 static void setup_sector(struct flash_bank *bank, unsigned int i,
 		unsigned int size) {
+    LOG_DEBUG("sector %u: %u bytes", i, size);
     assert(i < bank->num_sectors);
     bank->sectors[i].offset = bank->size;
     bank->sectors[i].size = size;
     bank->sectors[i].is_erased = -1;
     bank->sectors[i].is_protected = 0;
     bank->size += bank->sectors[i].size;
-    LOG_DEBUG("sector %u: %ukBytes", i, size >> 10);
 }
 
 static void setup_bank(struct flash_bank *bank, unsigned int start,
@@ -318,6 +326,8 @@ static int hc32_probe(struct flash_bank *bank) {
         return ERROR_FLASH_BANK_INVALID;
     }
 
+    LOG_INFO("Sector count = %u", hc32_info->num_sectors);
+
     bank->base = 0x00000000;
     bank->num_sectors = hc32_info->num_sectors;
     bank->sectors = calloc(bank->num_sectors, sizeof(struct flash_sector));
@@ -330,8 +340,6 @@ static int hc32_probe(struct flash_bank *bank) {
     setup_bank(bank, 0, flash_size, HC32_SECTOR_SIZE);
     bank->num_prot_blocks = 0;
     assert((bank->size >> 10) == flash_size_in_kb);
-
-    LOG_INFO("Number of sectors = %u", hc32_info->num_sectors);
 
     hc32_info->probed = true;
     return ERROR_OK;
