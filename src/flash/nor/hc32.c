@@ -17,7 +17,6 @@ struct hc32_flash_bank {
     uint16_t num_sectors;
 };
 
-
 static int hc32_get_flash_size(struct flash_bank *bank, uint32_t *flash_size) {
     return target_read_u32(bank->target, 0x00100c70, flash_size);
 }
@@ -48,6 +47,32 @@ static int hc32_protect(struct flash_bank *bank, int set,
     LOG_ERROR("Not implemented");
 
     return ERROR_OK;
+}
+
+static int hc32_get_flash_status(struct flash_bank *bank, uint32_t *status) {
+    struct target *target = bank->target;
+    return target_read_u32(target, HC32_FLASH_CR, status);
+}
+
+static int hc32_wait_status_busy(struct flash_bank *bank, int timeout) {
+    uint32_t status;
+    int retval = ERROR_OK;
+
+    for (;;) {
+        retval = hc32_get_flash_status(bank, &status);
+        if (retval != ERROR_OK)
+            return retval;
+        LOG_DEBUG("status: 0x%x", status);
+        if ((status & 0b10000) == 0)
+            break;
+        if (timeout-- <= 0) {
+            LOG_ERROR("timed out waiting for flash");
+            return ERROR_FAIL;
+        }
+        alive_sleep(1);
+    }
+
+    return retval;
 }
 
 static int hc32_flash_bypass(struct target *target) {
