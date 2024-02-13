@@ -31,11 +31,11 @@ static int hc32_get_flash_size(struct flash_bank *bank, uint32_t *flash_size) {
 }
 
 static int hc32_flash_bypass(struct target *target) {
-    int retval = target_write_u16(target, HC32_FLASH_BYPASS, 0x5A5A);
+    int retval = target_write_u32(target, HC32_FLASH_BYPASS, 0x5A5A);
     if (retval != ERROR_OK)
         return retval;
 
-    retval = target_write_u16(target, HC32_FLASH_BYPASS, 0xA5A5);
+    retval = target_write_u32(target, HC32_FLASH_BYPASS, 0xA5A5);
     if (retval != ERROR_OK)
         return retval;
     
@@ -145,6 +145,7 @@ static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
     retval = hc32_flash_bypass(target);
     if (retval != ERROR_OK)
         return retval;
+    
     uint32_t new = (FLASH_CR & ~0b11) | flash_state;
     LOG_INFO("Setting flash state to 0x%x", new);
     retval = target_write_u32(target, HC32_FLASH_CR, (FLASH_CR & ~0b11) | flash_state);
