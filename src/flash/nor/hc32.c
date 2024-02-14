@@ -256,7 +256,6 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
         LOG_INFO("Using word alignment for write");
         int retval; 
         for (uint32_t i = 0; i < count; i += 4) {
-            // uint32_t word = buffer[i] << 24 | buffer[i + 1] << 16 | buffer[i + 2] << 8 | buffer[i + 3];
             uint32_t word = buffer[i + 3] << 24 | buffer[i + 2] << 16 | buffer[i + 1] << 8 | buffer[i];
             uint32_t addr = bank->base + offset + i;
             retval = target_write_u32(target, addr, word);
@@ -271,7 +270,6 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
         LOG_INFO("Using halfword alignment for write");
         int retval; 
         for (uint32_t i = 0; i < count; i += 2) {
-            // uint16_t halfword = buffer[i] << 8 | buffer[i + 1];
             uint16_t halfword = buffer[i + 1] << 8 | buffer[i];
             uint32_t addr = bank->base + offset + i;
             retval = target_write_u16(target, addr, halfword);
@@ -301,11 +299,6 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
 
     return ERROR_OK;
 }
-
-// static int hc32_read(struct flash_bank *bank, uint8_t* buffer, uint32_t offset, uint32_t size) {
-//     default_flash_read(bank, buffer, offset, size);
-//     return ERROR_OK;
-// }
 
 static void setup_sector(struct flash_bank *bank, unsigned int i,
 		unsigned int size) {
