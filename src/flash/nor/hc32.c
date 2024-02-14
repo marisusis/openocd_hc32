@@ -21,7 +21,6 @@
 
 struct hc32_flash_bank {
     bool probed;
-    uint32_t user_bank_size;  
     uint16_t num_sectors;
     uint8_t flash_state;
 };
@@ -31,56 +30,52 @@ static int hc32_get_flash_size(struct flash_bank *bank, uint32_t *flash_size) {
 }
 
 static int hc32_flash_bypass(struct target *target) {
-    int retval = target_write_u32(target, HC32_FLASH_BYPASS, 0x5A5A);
+    int retval;
+    retval = target_write_u32(target, HC32_FLASH_BYPASS, 0x5a5a);
     if (retval != ERROR_OK)
         return retval;
 
-    retval = target_write_u32(target, HC32_FLASH_BYPASS, 0xA5A5);
+    retval = target_write_u32(target, HC32_FLASH_BYPASS, 0xa5a5);
     if (retval != ERROR_OK)
         return retval;
-    
+
     return ERROR_OK;
 }
 
-static int hc32_flash_unlock(struct flash_bank *bank) {
+static int hc32_flash_unlock(struct flash_bank *bank, uint16_t sector) {
     struct target *target = bank->target;
-    struct hc32_flash_bank *hc32_info = bank->driver_priv;
+    // struct hc32_flash_bank *hc32_info = bank->driver_priv;
     int retval;
+    if (sector < 128) {
+        retval = hc32_flash_bypass(target);
+        if (retval != ERROR_OK)
+            return retval;
 
-    retval = hc32_flash_bypass(target);
-    if (retval != ERROR_OK)
-        return retval;
-
-    retval = target_write_u32(target, HC32_FLASH_SLOCK0, 0xfffffff);
-    if (retval != ERROR_OK)
-        return retval;
-    
-    if (hc32_info->num_sectors > 128) {
+        retval = target_write_u32(target, HC32_FLASH_SLOCK0, 0xffffffff);
+        if (retval != ERROR_OK)
+            return retval;
+    } else if (sector < 256) {
         retval = hc32_flash_bypass(target);
         if (retval != ERROR_OK)
             return retval;
             
-        retval = target_write_u32(target, HC32_FLASH_SLOCK1, 0xfffffff);
+        retval = target_write_u32(target, HC32_FLASH_SLOCK1, 0xffffffff);
         if (retval != ERROR_OK)
             return retval;
-    }
-
-    if (hc32_info->num_sectors > 256) {
+    } else if (sector < 384) {
         retval = hc32_flash_bypass(target);
         if (retval != ERROR_OK)
             return retval;
             
-        retval = target_write_u32(target, HC32_FLASH_SLOCK2, 0xfffffff);
+        retval = target_write_u32(target, HC32_FLASH_SLOCK2, 0xffffffff);
         if (retval != ERROR_OK)
             return retval;
-    }
-
-    if (hc32_info->num_sectors == 384) {
+    } else {
         retval = hc32_flash_bypass(target);
         if (retval != ERROR_OK)
             return retval;
             
-        retval = target_write_u32(target, HC32_FLASH_SLOCK3, 0xfffffff);
+        retval = target_write_u32(target, HC32_FLASH_SLOCK3, 0xffffffff);
         if (retval != ERROR_OK)
             return retval;
     }
@@ -102,6 +97,7 @@ static int hc32_wait_status_busy(struct flash_bank *bank, int timeout) {
     for (;;) {
         retval = hc32_get_flash_status(bank, &status);
         if (retval != ERROR_OK)
+            LOG_ERROR("Failed to read flash status");
             return retval;
         LOG_DEBUG("status: 0x%x", status);
         if ((status & 0b10000) == 0)
@@ -142,28 +138,38 @@ static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
     if (retval != ERROR_OK)
         return retval;
 
+    LOG_INFO("FLASH_CR = 0x%x", FLASH_CR);
+
     retval = hc32_flash_bypass(target);
     if (retval != ERROR_OK)
         return retval;
     
-    uint32_t new = (FLASH_CR & ~0b11) | flash_state;
-    LOG_INFO("Setting flash state to 0x%x", new);
+    // uint32_t new = (FLASH_CR & ~0b11) | flash_state;
+    // LOG_INFO("Setting flash state to 0x%x", new);
     retval = target_write_u32(target, HC32_FLASH_CR, (FLASH_CR & ~0b11) | flash_state);
-    if (retval != ERROR_OK)
+    // LOG_INFO("after target_write_u32");
+    if (retval != ERROR_OK) {
+        LOG_ERROR("Failed to set flash state");
         return retval;
+    }
 
+    // LOG_INFO("before target_read_u32");
     retval = target_read_u32(target, HC32_FLASH_CR, &FLASH_CR);
-    if (retval != ERROR_OK)
+    // LOG_INFO("after target_read_u32");
+    if (retval != ERROR_OK) {
+        LOG_ERROR("Failed to read flash state");
         return retval; 
+    }
 
-    if (!(FLASH_CR & flash_state)) {
-        LOG_ERROR("Failed to set flash state to %u", flash_state);
+    if ((FLASH_CR & 0b11) != flash_state) {
+        LOG_ERROR("Flash state not %u", flash_state);
         LOG_ERROR("FLASH_CR = 0x%x", FLASH_CR);
         return ERROR_FAIL;
     }
 
     hc32_info->flash_state = flash_state;
 
+    // LOG_INFO("Flash state set to 0x%x", flash_state);
     return retval;
 }
 
@@ -172,6 +178,7 @@ static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
 static int hc32_erase(struct flash_bank *bank, unsigned int first,
 		unsigned int last) {
     struct target *target = bank->target;
+    LOG_INFO("Erasing sectors %u to %u", first, last);
 
     assert((first <= last) && (last < bank->num_sectors));
 
@@ -184,26 +191,37 @@ static int hc32_erase(struct flash_bank *bank, unsigned int first,
 
     // STEP 2
     retval = hc32_set_flash_state(bank, FLASH_OP_SECTOR_ERASE);
-    if (retval != ERROR_OK)
+    if (retval != ERROR_OK) {
+        LOG_ERROR("Failed to set flash state to sector erase");
         return retval;
+    }
 
-    // Step 5
-    retval = hc32_flash_unlock(bank);
-    if (retval != ERROR_OK)
-        return retval;
+
 
     for (unsigned int i = first; i <= last; i++) {
-        uint32_t sector_middle = (0x1ff / 2) + (i * 0x1ff);
-        retval = target_write_u32(target, sector_middle, 0xDEADBEEF);
-        if (retval != ERROR_OK)
+        // Step 5
+        retval = hc32_flash_unlock(bank, i);
+        if (retval != ERROR_OK) {
+            LOG_ERROR("Failed to unlock flash");
             return retval;
+        }
+
+        uint32_t sector_middle = (HC32_SECTOR_SIZE / 2) + (i * HC32_SECTOR_SIZE);
+        retval = target_write_u32(target, sector_middle, 0xDEADBEEF);
+        LOG_INFO("Erasing sector %u at 0x%x", i, sector_middle);
+        if (retval != ERROR_OK) {
+            LOG_ERROR("Failed to write to sector middle");
+            return retval;
+        }
 
         retval = hc32_wait_status_busy(bank, FLASH_ERASE_TIMEOUT);
     }
 
     retval = hc32_set_flash_state(bank, FLASH_OP_READ);
-    if (retval != ERROR_OK)
+    if (retval != ERROR_OK) {
+        LOG_ERROR("Failed to set flash state to read");
         return retval;
+    }
 
     return ERROR_OK;
 }
@@ -226,32 +244,60 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
         return ERROR_TARGET_NOT_HALTED;
     }
 
-    hc32_flash_unlock(bank);
+    hc32_set_flash_state(bank, FLASH_OP_WRITE);
 
-    // Lets try writing a byte at a time
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t addr = bank->base + offset + i;
-        int retval = target_write_u8(target, addr, buffer[i]);
-        if (retval != ERROR_OK)
-            return retval;
+    hc32_flash_unlock(bank, 0);
+    hc32_flash_unlock(bank, 128);
+
+    LOG_INFO("Writing %u bytes to 0x%x", count, (unsigned int)(bank->base + offset));
+
+    // try word alignment
+    if (offset % 4 == 0 && count % 4 == 0) {
+        LOG_INFO("Using word alignment for write");
+        int retval; 
+        for (uint32_t i = 0; i < count; i += 4) {
+            // uint32_t word = buffer[i] << 24 | buffer[i + 1] << 16 | buffer[i + 2] << 8 | buffer[i + 3];
+            uint32_t word = buffer[i + 3] << 24 | buffer[i + 2] << 16 | buffer[i + 1] << 8 | buffer[i];
+            uint32_t addr = bank->base + offset + i;
+            retval = target_write_u32(target, addr, word);
+            if (retval != ERROR_OK)
+                return retval;
+
+            retval = hc32_wait_status_busy(bank, FLASH_WRITE_TIMEOUT);
+            if (retval != ERROR_OK)
+                return retval;
+        }
+    } else if (offset % 2 == 0 && count % 2 == 0) {
+        LOG_INFO("Using halfword alignment for write");
+        int retval; 
+        for (uint32_t i = 0; i < count; i += 2) {
+            // uint16_t halfword = buffer[i] << 8 | buffer[i + 1];
+            uint16_t halfword = buffer[i + 1] << 8 | buffer[i];
+            uint32_t addr = bank->base + offset + i;
+            retval = target_write_u16(target, addr, halfword);
+            if (retval != ERROR_OK)
+                return retval;
+
+            retval = hc32_wait_status_busy(bank, FLASH_WRITE_TIMEOUT);
+            if (retval != ERROR_OK)
+                return retval;
+        }
+    } else {
+        LOG_INFO("Using byte alignment for write");
+        int retval; 
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t addr = bank->base + offset + i;
+            retval = target_write_u8(target, addr, buffer[i]);
+            if (retval != ERROR_OK)
+                return retval;
+
+            retval = hc32_wait_status_busy(bank, FLASH_WRITE_TIMEOUT);
+            if (retval != ERROR_OK)
+                return retval;
+        }
     }
-    
-    // retval = hc32_flash_bypass(target);
-    // if (retval != ERROR_OK)
-    //     return retval;
 
-    // uint32_t old_cr = 0;
-    // retval = target_read_u32(target, HC32_FLASH_CR, &old_cr);
-    // if (retval != ERROR_OK)
-    //     return retval;
-
-    // retval = target_write_u32(target, HC32_FLASH_CR, old_cr | 0x1);
-    // if (retval != ERROR_OK)
-    //     return retval;
-
-
-    // Handle byte, halfword, and word
-
+    hc32_set_flash_state(bank, FLASH_OP_READ);
 
     return ERROR_OK;
 }
@@ -307,12 +353,6 @@ static int hc32_probe(struct flash_bank *bank) {
         return retval;
 
     flash_size_in_kb = flash_size / 1024;
-
-    if (hc32_info->user_bank_size) {
-        LOG_INFO("ignoring flash probed value, using configured bank size");
-        flash_size = hc32_info->user_bank_size;
-        flash_size_in_kb = hc32_info->user_bank_size / 1024;
-    }
 
     LOG_INFO("Flash size = %u", flash_size_in_kb);
 
@@ -376,18 +416,79 @@ static int get_hc32_info(struct flash_bank *bank, struct command_invocation *cmd
     return ERROR_OK;
 }
 
-COMMAND_HANDLER(hc32_handle_mass_erase_command) {
+COMMAND_HANDLER(hc32_handle_unlock_command) {
+    int retval;
+    struct flash_bank *bank;
+
+
+    retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
+	if (retval != ERROR_OK)
+		return retval;
+
+    retval = hc32_flash_unlock(bank, 0);
+    retval = hc32_flash_unlock(bank, 1);
+    if (retval != ERROR_OK)
+        return retval;
+
     return ERROR_OK;
 }
 
+COMMAND_HANDLER(hc32_handle_switch_mode_command) {
+    int retval;
+    struct flash_bank *bank;
+
+    if (CMD_ARGC != 2)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+    retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
+	if (retval != ERROR_OK)
+		return retval;
+
+    uint8_t op = 0;
+    COMMAND_PARSE_NUMBER(u8, CMD_ARGV[1], op);
+
+    hc32_set_flash_state(bank, op);
+
+    return ERROR_OK;
+}
+
+// COMMAND_HANDLER(hc32_handle_setup_command) {
+//     int retval;
+//     struct flash_bank *bank;
+
+//     retval = CALL_COMMAND_HANDLER(flash_command_get_bank, 0, &bank);
+// 	if (retval != ERROR_OK)
+// 		return retval;
+
+
+
+//     hc32_set_flash_state(bank, op);
+
+//     return ERROR_OK;
+// }
+
 static const struct command_registration hc32_exec_command_handlers[] = {
     {
-        .name = "mass_erase",
-        .handler = hc32_handle_mass_erase_command,
+        .name = "switch",
+        .handler = hc32_handle_switch_mode_command,
         .mode = COMMAND_ANY,
         .help = "mass erase command group",
         .usage = "",
     },
+    {
+        .name = "unlock",
+        .handler = hc32_handle_unlock_command,
+        .mode = COMMAND_ANY,
+        .help = "unlock",
+        .usage = "",
+    },
+    // {
+    //     .name = "setup",
+    //     .handler = hc32_handle_setup_command,
+    //     .mode = COMMAND_ANY,
+    //     .help = "setup",
+    //     .usage = "",
+    // },
     COMMAND_REGISTRATION_DONE
 };
 
