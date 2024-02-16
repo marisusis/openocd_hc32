@@ -138,7 +138,7 @@ static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
     if (retval != ERROR_OK)
         return retval;
 
-    LOG_INFO("FLASH_CR = 0x%x", FLASH_CR);
+    // LOG_INFO("FLASH_CR = 0x%x", FLASH_CR);
 
     retval = hc32_flash_bypass(target);
     if (retval != ERROR_OK)
@@ -178,6 +178,13 @@ static int hc32_set_flash_state(struct flash_bank *bank, uint8_t flash_state) {
 static int hc32_erase(struct flash_bank *bank, unsigned int first,
 		unsigned int last) {
     struct target *target = bank->target;
+    struct hc32_flash_bank *hc32_info = bank->driver_priv;
+
+    if (!hc32_info->probed) {
+        LOG_ERROR("Flash not probed");
+        return ERROR_FLASH_BANK_NOT_PROBED;
+    }
+
     LOG_INFO("Erasing sectors %u to %u", first, last);
 
     assert((first <= last) && (last < bank->num_sectors));
@@ -238,6 +245,12 @@ static int hc32_write(struct flash_bank *bank, const uint8_t *buffer,
 		uint32_t offset, uint32_t count) {
 
     struct target *target = bank->target;
+    struct hc32_flash_bank *hc32_info = bank->driver_priv;
+
+    if (!hc32_info->probed) {
+        LOG_ERROR("Flash not probed");
+        return ERROR_FLASH_BANK_NOT_PROBED;
+    }
 
     if (target->state != TARGET_HALTED) {
         LOG_ERROR("Target not halted");
